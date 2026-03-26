@@ -23,10 +23,9 @@ public class ClientHandler extends Thread {
 
     private String clientUsername;
 
-@Override
+    @Override
     public void run() {
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream())); 
-             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream())); PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
             String request;
             while ((request = in.readLine()) != null) {
@@ -42,7 +41,7 @@ public class ClientHandler extends Thread {
                             onlineUsers.put(clientUsername, out);
                             PresenceManager.getInstance().setUserOnline(clientUsername, out);
                             dashboard.log("🟢 " + clientUsername + " connected.");
-                            
+
                             // Send chat list and notify friends
                             out.println("MY_CHATS|" + fetchMyChats(clientUsername));
                             broadcastStatusToFriends(clientUsername, "ONLINE");
@@ -74,6 +73,11 @@ public class ClientHandler extends Thread {
 
                         case "CREATE_POST":
                             savePostToDB(parts[2], parts[1]);
+                            break;
+
+                        case "CREATE_GROUP":
+                            // parts = [CREATE_GROUP, groupName, creator, membersStr, keysStr]
+                            handleCreateGroup(parts[1], parts[2], parts[3], parts[4]);
                             break;
 
                         case "GET_HOME_FEED":
@@ -152,19 +156,20 @@ public class ClientHandler extends Thread {
             }
         }
     }
-    
+
     private void broadcastStatusToFriends(String myUsername, String status) {
         int myId = getUserId(myUsername);
-        if (myId == -1) return;
+        if (myId == -1) {
+            return;
+        }
 
         // SQL to find all ACCEPTED friends of this user
-        String sql = "SELECT u.username FROM friendships f " +
-                     "JOIN users u ON (u.id = f.requester_id OR u.id = f.receiver_id) " +
-                     "WHERE (f.requester_id = ? OR f.receiver_id = ?) " +
-                     "AND u.id != ? AND f.status = 'ACCEPTED'";
+        String sql = "SELECT u.username FROM friendships f "
+                + "JOIN users u ON (u.id = f.requester_id OR u.id = f.receiver_id) "
+                + "WHERE (f.requester_id = ? OR f.receiver_id = ?) "
+                + "AND u.id != ? AND f.status = 'ACCEPTED'";
 
-        try (Connection conn = com.orbitserver.db.DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (Connection conn = com.orbitserver.db.DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, myId);
             ps.setInt(2, myId);
             ps.setInt(3, myId);
@@ -172,7 +177,7 @@ public class ClientHandler extends Thread {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String friendUsername = rs.getString("username");
-                    
+
                     // 🚀 If the friend is online, send them the update packet
                     PrintWriter friendOut = PresenceManager.getInstance().getUserOutput(friendUsername);
                     if (friendOut != null) {
@@ -268,7 +273,7 @@ public class ClientHandler extends Thread {
         int targetId = getUserId(targetUsername);
 
         if (status.equals("DECLINED")) {
-            removeFriend(myUsername, targetUsername); // Just delete the request entirely
+            removeFriend(myUsername, targetUsername); 
             return;
         }
 
@@ -279,6 +284,22 @@ public class ClientHandler extends Thread {
             ps.setInt(2, myId);     // I am the receiver accepting it
             ps.executeUpdate();
             dashboard.log(myUsername + " accepted friend request from " + targetUsername);
+
+            // 🚀 THE FIX: Instantly push the new chat lists to BOTH users if they are online!
+            PrintWriter myOut = PresenceManager.getInstance().getUserOutput(myUsername);
+            if (myOut != null) {
+                myOut.println("MY_CHATS|" + fetchMyChats(myUsername));
+            }
+
+            PrintWriter targetOut = PresenceManager.getInstance().getUserOutput(targetUsername);
+            if (targetOut != null) {
+                targetOut.println("MY_CHATS|" + fetchMyChats(targetUsername));
+            }
+
+            // Also broadcast their online status to each other so the green dots show up
+            broadcastStatusToFriends(myUsername, "ONLINE");
+            broadcastStatusToFriends(targetUsername, "ONLINE");
+
         } catch (Exception e) {
             dashboard.log("Accept Request Error: " + e.getMessage());
         }
@@ -296,6 +317,18 @@ public class ClientHandler extends Thread {
             ps.setInt(4, myId);
             ps.executeUpdate();
             dashboard.log("Friendship severed between " + myUsername + " and " + targetUsername);
+
+            // 🚀 THE FIX: Instantly push the updated chat lists to BOTH users!
+            PrintWriter myOut = PresenceManager.getInstance().getUserOutput(myUsername);
+            if (myOut != null) {
+                myOut.println("MY_CHATS|" + fetchMyChats(myUsername));
+            }
+
+            PrintWriter targetOut = PresenceManager.getInstance().getUserOutput(targetUsername);
+            if (targetOut != null) {
+                targetOut.println("MY_CHATS|" + fetchMyChats(targetUsername));
+            }
+
         } catch (Exception e) {
             dashboard.log("Remove Friend Error: " + e.getMessage());
         }
@@ -346,7 +379,6 @@ public class ClientHandler extends Thread {
             return "";
         }
 
-        // Find users who sent ME a request that is still PENDING
         String sql = "SELECT u.username, u.full_name FROM friendships f "
                 + "JOIN users u ON u.id = f.requester_id "
                 + "WHERE f.receiver_id = ? AND f.status = 'PENDING'";
@@ -372,7 +404,6 @@ public class ClientHandler extends Thread {
             return "";
         }
 
-        // Find all ACCEPTED friendships
         String sql = "SELECT u.username, u.full_name FROM friendships f "
                 + "JOIN users u ON (u.id = f.requester_id OR u.id = f.receiver_id) "
                 + "WHERE (f.requester_id = ? OR f.receiver_id = ?) "
@@ -401,7 +432,6 @@ public class ClientHandler extends Thread {
             return "";
         }
 
-        // 🚀 THE FIX: Aggressively scrub the word "null"
         String friendsSql = "SELECT u.username, COALESCE(NULLIF(u.full_name, 'null'), NULLIF(u.full_name, ''), u.username) as clean_name FROM friendships f "
                 + "JOIN users u ON (u.id = f.requester_id OR u.id = f.receiver_id) "
                 + "WHERE (f.requester_id = ? OR f.receiver_id = ?) "
@@ -414,16 +444,14 @@ public class ClientHandler extends Thread {
                 while (rs.next()) {
                     String friendUsername = rs.getString("username");
                     String fullName = rs.getString("clean_name");
-                    
-                    // 🚀 THE FIX: Check if this friend is currently in our PresenceManager
+
                     boolean isOnline = PresenceManager.getInstance().isUserOnline(friendUsername);
                     String status = isOnline ? "Active Now" : "Offline";
 
-                    // Use ~ to separate data
                     sb.append(friendUsername).append("~")
-                      .append(fullName).append("~")
-                      .append("DM").append("~") // Type
-                      .append(status).append(","); // Status text instead of "Online"
+                            .append(fullName).append("~")
+                            .append("DM").append("~") 
+                            .append(status).append(","); 
                 }
             }
         } catch (Exception e) {
@@ -437,8 +465,11 @@ public class ClientHandler extends Thread {
             ps.setInt(1, myUserId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
+                    // 🚀 4 parts (ID ~ Name ~ Type ~ Status)
                     sb.append("GROUP_").append(rs.getInt("id")).append("~")
-                            .append(rs.getString("group_name")).append("~GROUP,");
+                      .append(rs.getString("group_name")).append("~")
+                      .append("GROUP").append("~")
+                      .append("Group Chat").append(",");
                 }
             }
         } catch (Exception e) {
@@ -451,32 +482,57 @@ public class ClientHandler extends Thread {
     // ==============================================================
     // MESSAGING & ROUTING ENGINE
     // ==============================================================
-    private void handleSendMessage(String target, String encryptedText, String senderUsername) {
-        // Change this line to use AM/PM
+private void handleSendMessage(String target, String encryptedText, String senderUsername) {
         String time = new java.text.SimpleDateFormat("h:mm a").format(new java.util.Date());
         int senderId = getUserId(senderUsername);
 
+        // 🚀 NEW: Fetch the Sender's Full Name for the live broadcast!
+        String senderFullName = senderUsername; // Fallback
+        String nameSql = "SELECT COALESCE(NULLIF(full_name, 'null'), username) FROM users WHERE id = ?";
+        try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(nameSql)) {
+            ps.setInt(1, senderId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) senderFullName = rs.getString(1);
+            }
+        } catch (Exception e) {
+            dashboard.log("Error getting full name: " + e.getMessage());
+        }
+
         if (target.startsWith("GROUP_")) {
-            // --- GROUP MESSAGE LOGIC ---
             int groupId = Integer.parseInt(target.replace("GROUP_", ""));
             saveMessageToDB(groupId, senderId, encryptedText);
 
-            // Note: For a real group, you would SELECT all members from chat_members 
-            // and loop through onlineUsers to forward the message.
-            dashboard.log("Group message saved to DB for " + target);
+            String sql = "SELECT u.username FROM chat_members cm JOIN users u ON cm.user_id = u.id WHERE cm.conversation_id = ?";
+            try (Connection conn = DBConnection.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setInt(1, groupId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String memberUsername = rs.getString("username");
+                        
+                        if (!memberUsername.equals(senderUsername)) {
+                            PrintWriter memberOut = onlineUsers.get(memberUsername);
+                            if (memberOut != null) {
+                                // 🚀 Send Full Name instead of Username
+                                memberOut.println("NEW_MESSAGE|" + target + "|" + senderFullName + "|" + encryptedText + "|" + time);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                dashboard.log("Group Routing Error: " + e.getMessage());
+            }
 
         } else {
-            // --- DIRECT MESSAGE LOGIC ---
             int targetId = getUserId(target);
             int convoId = getOrCreateDirectConversation(senderId, targetId);
 
             saveMessageToDB(convoId, senderId, encryptedText);
 
-            // Instantly forward to the receiver if they are currently online!
             PrintWriter receiverOut = onlineUsers.get(target);
             if (receiverOut != null) {
-                // The receiver's activeChatId is the sender's username
-                receiverOut.println("NEW_MESSAGE|" + senderUsername + "|" + senderUsername + "|" + encryptedText + "|" + time);
+                // 🚀 Send Full Name instead of Username
+                receiverOut.println("NEW_MESSAGE|" + senderUsername + "|" + senderFullName + "|" + encryptedText + "|" + time);
             }
         }
     }
@@ -497,7 +553,6 @@ public class ClientHandler extends Thread {
             return "";
         }
 
-        // 🚀 FIX: Use %l:%i %p for 12-hour AM/PM format (e.g., 11:15 PM)
         String sql = "SELECT u.username, COALESCE(NULLIF(u.full_name, 'null'), u.username) as clean_name, "
                 + "m.encrypted_content, DATE_FORMAT(m.created_at, '%l:%i %p') as time_str "
                 + "FROM messages m JOIN users u ON m.sender_id = u.id "
@@ -507,7 +562,6 @@ public class ClientHandler extends Thread {
             ps.setInt(1, convoId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    // Use ~ to avoid clashing with colons in the time
                     sb.append(rs.getString("clean_name")).append("~")
                             .append(rs.getString("encrypted_content")).append("~")
                             .append(rs.getString("time_str")).append(",");
@@ -521,43 +575,42 @@ public class ClientHandler extends Thread {
     }
 
     private void savePostToDB(String username, String content) {
-    int userId = getUserId(username);
-    String sql = "INSERT INTO posts (user_id, content, created_at) VALUES (?, ?, NOW())";
-    
-    try (Connection conn = DBConnection.getConnection();
-         PreparedStatement ps = conn.prepareStatement(sql)) {
-        ps.setInt(1, userId);
-        ps.setString(2, content);
-        ps.executeUpdate();
-        dashboard.log("📝 New post created by " + username);
-    } catch (Exception e) { dashboard.log("Post DB Error: " + e.getMessage()); }
-}
+        int userId = getUserId(username);
+        String sql = "INSERT INTO posts (user_id, content, created_at) VALUES (?, ?, NOW())";
 
-private String fetchHomeFeed(String username) {
-    StringBuilder sb = new StringBuilder();
-    // This query gets posts from the user AND their friends
-    String sql = "SELECT u.full_name, p.content, DATE_FORMAT(p.created_at, '%b %d, %h:%i %p') as time_str, " +
-                 "(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as likes, " +
-                 "(SELECT COUNT(*) FROM post_comments WHERE post_id = p.id) as comments " +
-                 "FROM posts p JOIN users u ON p.user_id = u.id " +
-                 "ORDER BY p.created_at DESC LIMIT 20";
-
-    try (Connection conn = DBConnection.getConnection();
-         PreparedStatement ps = conn.prepareStatement(sql);
-         ResultSet rs = ps.executeQuery()) {
-        while (rs.next()) {
-            // Format: Author|Content|Time|Likes|Comments~
-            sb.append(rs.getString("full_name")).append("|")
-              .append(rs.getString("content")).append("|")
-              .append(rs.getString("time_str")).append("|")
-              .append(rs.getInt("likes")).append("|")
-              .append(rs.getInt("comments")).append("~");
+        try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, userId);
+            ps.setString(2, content);
+            ps.executeUpdate();
+            dashboard.log("📝 New post created by " + username);
+        } catch (Exception e) {
+            dashboard.log("Post DB Error: " + e.getMessage());
         }
-    } catch (Exception e) { dashboard.log("Feed Fetch Error: " + e.getMessage()); }
-    
-    return sb.toString();
-}
-    
+    }
+
+    private String fetchHomeFeed(String username) {
+        StringBuilder sb = new StringBuilder();
+        String sql = "SELECT u.full_name, p.content, DATE_FORMAT(p.created_at, '%b %d, %h:%i %p') as time_str, "
+                + "(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as likes, "
+                + "(SELECT COUNT(*) FROM post_comments WHERE post_id = p.id) as comments "
+                + "FROM posts p JOIN users u ON p.user_id = u.id "
+                + "ORDER BY p.created_at DESC LIMIT 20";
+
+        try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                sb.append(rs.getString("full_name")).append("|")
+                        .append(rs.getString("content")).append("|")
+                        .append(rs.getString("time_str")).append("|")
+                        .append(rs.getInt("likes")).append("|")
+                        .append(rs.getInt("comments")).append("~");
+            }
+        } catch (Exception e) {
+            dashboard.log("Feed Fetch Error: " + e.getMessage());
+        }
+
+        return sb.toString();
+    }
+
     private void saveMessageToDB(int conversationId, int senderId, String encryptedText) {
         String sql = "INSERT INTO messages (conversation_id, sender_id, encrypted_content) VALUES (?, ?, ?)";
         try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -569,11 +622,10 @@ private String fetchHomeFeed(String username) {
             dashboard.log("DB Error saving msg: " + e.getMessage());
         }
     }
-    
+
     private boolean handleUpdateProfile(String newName, String username) {
         String sql = "UPDATE users SET full_name = ? WHERE username = ?";
-        try (Connection conn = DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, newName);
             ps.setString(2, username);
             return ps.executeUpdate() > 0;
@@ -582,8 +634,67 @@ private String fetchHomeFeed(String username) {
             return false;
         }
     }
-    
-private String fetchProfileData(String targetUser, String myUsername) {
+
+    // 🚀 THE FIX: This entire method has been re-written to prevent database connection collisions.
+    private void handleCreateGroup(String groupName, String creator, String membersStr, String keysStr) {
+        String[] members = membersStr.split(",");
+        String[] keys = keysStr.split(",");
+
+        // 1. Fetch User IDs BEFORE opening the main group connection
+        // This prevents getUserId() from closing our connection mid-loop
+        int[] memberIds = new int[members.length];
+        for (int i = 0; i < members.length; i++) {
+            memberIds[i] = getUserId(members[i].trim());
+        }
+
+        // 2. Perform all Group INSERT operations safely
+        try (Connection conn = DBConnection.getConnection()) {
+            String createConvoSql = "INSERT INTO conversations (type, group_name) VALUES ('GROUP', ?)";
+            PreparedStatement ps = conn.prepareStatement(createConvoSql, java.sql.Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, groupName);
+            ps.executeUpdate();
+
+            int convoId = -1;
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                if (rs.next()) convoId = rs.getInt(1);
+            }
+
+            if (convoId == -1) return;
+
+            // Add members and keys
+            String addMemberSql = "INSERT INTO chat_members (conversation_id, user_id, encrypted_key) VALUES (?, ?, ?)";
+            try (PreparedStatement psMember = conn.prepareStatement(addMemberSql)) {
+                for (int i = 0; i < members.length; i++) {
+                    if (memberIds[i] != -1) {
+                        psMember.setInt(1, convoId);
+                        psMember.setInt(2, memberIds[i]);
+                        psMember.setString(3, keys[i].trim());
+                        psMember.executeUpdate();
+                    }
+                }
+            }
+
+            dashboard.log("🛡️ E2EE Group '" + groupName + "' securely created by " + creator);
+
+        } catch (Exception e) {
+            dashboard.log("Group Creation DB Error: " + e.getMessage());
+            e.printStackTrace();
+            return; // Stop here if DB failed, don't broadcast.
+        }
+
+        // 3. NETWORK BROADCASTS (Done safely OUTSIDE the Database connection!)
+        // Now that the DB is done, we can safely call fetchMyChats without killing our inserts
+        for (int i = 0; i < members.length; i++) {
+            if (memberIds[i] != -1) {
+                PrintWriter memberOut = PresenceManager.getInstance().getUserOutput(members[i].trim());
+                if (memberOut != null) {
+                    memberOut.println("MY_CHATS|" + fetchMyChats(members[i].trim()));
+                }
+            }
+        }
+    }
+
+    private String fetchProfileData(String targetUser, String myUsername) {
         int targetId = getUserId(targetUser);
         String fullName = targetUser; // Fallback if they haven't set a name
         int postCount = 0;
@@ -596,14 +707,19 @@ private String fetchProfileData(String targetUser, String myUsername) {
             PreparedStatement ps1 = conn.prepareStatement(nameSql);
             ps1.setInt(1, targetId);
             ResultSet rs1 = ps1.executeQuery();
-            if (rs1.next()) fullName = rs1.getString(1);
+            if (rs1.next()) {
+                fullName = rs1.getString(1);
+            }
 
             // 2. Count Friends
             String friendSql = "SELECT COUNT(*) FROM friendships WHERE (requester_id = ? OR receiver_id = ?) AND status = 'ACCEPTED'";
             PreparedStatement ps2 = conn.prepareStatement(friendSql);
-            ps2.setInt(1, targetId); ps2.setInt(2, targetId);
+            ps2.setInt(1, targetId);
+            ps2.setInt(2, targetId);
             ResultSet rs2 = ps2.executeQuery();
-            if (rs2.next()) friendCount = rs2.getInt(1);
+            if (rs2.next()) {
+                friendCount = rs2.getInt(1);
+            }
 
             // 3. Get User's Posts
             String postSql = "SELECT content, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
@@ -613,10 +729,10 @@ private String fetchProfileData(String targetUser, String myUsername) {
             while (rs3.next()) {
                 postCount++;
                 postsBuilder.append(rs3.getString("content")).append("^")
-                            .append(rs3.getString("time_str")).append("~");
+                        .append(rs3.getString("time_str")).append("~");
             }
-        } catch (Exception e) { 
-            dashboard.log("Profile DB Error: " + e.getMessage()); 
+        } catch (Exception e) {
+            dashboard.log("Profile DB Error: " + e.getMessage());
         }
 
         boolean isMe = targetUser.equals(myUsername);
