@@ -47,6 +47,34 @@ public class ClientHandler extends Thread {
                             broadcastStatusToFriends(clientUsername, "ONLINE");
                             break;
 
+                        case "GET_HOME_FEED":
+                            StringBuilder feed = new StringBuilder();
+                            try (Connection conn = DBConnection.getConnection()) {
+                                String sql = "SELECT u.username, COALESCE(NULLIF(u.full_name, 'null'), u.username) as author, "
+                                        + "p.content, p.media_url, DATE_FORMAT(p.created_at, '%b %d, %h:%i %p') as time_str "
+                                        + "FROM posts p JOIN users u ON p.user_id = u.id ORDER BY p.created_at DESC";
+                                PreparedStatement ps = conn.prepareStatement(sql);
+                                ResultSet rs = ps.executeQuery();
+                                while (rs.next()) {
+                                    String author = rs.getString("author");
+                                    String text = rs.getString("content");
+                                    String media = rs.getString("media_url");
+                                    String time = rs.getString("time_str");
+
+                                    String payload = text != null ? text : "";
+                                    // Re-attach the image tag so the Client UI knows how to draw it
+                                    if (media != null && !media.isEmpty() && !media.equals("null")) {
+                                        payload += "<br>[IMG]" + media;
+                                    }
+
+                                    feed.append(author).append("|").append(payload).append("|").append(time).append("|0|0~");
+                                }
+                                out.println("HOME_FEED|" + feed.toString());
+                            } catch (Exception e) {
+                                dashboard.log("Feed Error: " + e.getMessage());
+                            }
+                            break;
+
                         case "RENAME_GROUP":
                             // parts = [RENAME_GROUP, groupId, newName, sender]
                             String gid = parts[1].replace("GROUP_", "");
@@ -137,18 +165,41 @@ public class ClientHandler extends Thread {
                             }
                             break;
 
-                        case "CREATE_POST":
-                            savePostToDB(parts[2], parts[1]);
-                            break;
+                       case "CREATE_POST":
+        // Expected Format: CREATE_POST | username | textContent | base64Image
+        String postUser = parts.length > 1 ? parts[1] : null;
+        String postText = parts.length > 2 ? parts[2] : "null";
+        String postMedia = parts.length > 3 ? parts[3] : "null";
+
+        if (postUser == null) break; // Invalid packet
+
+        if (postText.equals("null") || postText.trim().isEmpty()) {
+            postText = null; // Set to null for DB insertion if empty
+        }
+        
+        if (postMedia.equals("null") || postMedia.trim().isEmpty()) {
+            postMedia = null; // Set to null for DB insertion if empty
+        }
+
+        try (Connection conn = DBConnection.getConnection()) {
+            // 🚀 THE FIX: Renamed 'sql' to 'postSql' to avoid variable conflicts!
+            String postSql = "INSERT INTO posts (user_id, content, media_url, created_at) VALUES ((SELECT id FROM users WHERE username = ?), ?, ?, NOW())";
+            PreparedStatement ps = conn.prepareStatement(postSql);
+            ps.setString(1, postUser);
+            ps.setString(2, postText);
+            ps.setString(3, postMedia);
+            
+            ps.executeUpdate();
+            dashboard.log("📝 " + postUser + " created a new post with media.");
+        } catch (Exception e) {
+            dashboard.log("Post DB Error: " + e.getMessage());
+            e.printStackTrace(); // Print to console for debugging
+        }
+        break;
 
                         case "CREATE_GROUP":
                             // parts = [CREATE_GROUP, groupName, creator, membersStr, keysStr]
                             handleCreateGroup(parts[1], parts[2], parts[3], parts[4]);
-                            break;
-
-                        case "GET_HOME_FEED":
-                            String feedData = fetchHomeFeed(parts[1]);
-                            out.println("HOME_FEED|" + feedData);
                             break;
 
                         case "SEND_MESSAGE":
@@ -282,9 +333,7 @@ public class ClientHandler extends Thread {
         }
     }
 
-
     // CORE DATABASE HELPERS
-
     // Helper: Converts a username string into their Database ID integer
     private int getUserId(String username) {
         String sql = "SELECT id FROM users WHERE username = ?";
@@ -314,10 +363,7 @@ public class ClientHandler extends Thread {
         }
     }
 
-   
     // FRIENDSHIP LOGIC
-
-    
     private String searchUsers(String query, String myUsername) {
         StringBuilder sb = new StringBuilder();
         // Look for users that match the search, but exclude myself
@@ -425,9 +471,7 @@ public class ClientHandler extends Thread {
         }
     }
 
- 
     // ACCOUNT LOGIC
-
     private String loginUser(String username, String passwordHash) {
         String sql = "SELECT full_name FROM users WHERE username = ? AND password = ?";
         try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -570,10 +614,7 @@ public class ClientHandler extends Thread {
         return sb.toString();
     }
 
-    
     // MESSAGING & ROUTING ENGINE
-  
-    
     private void handleSendMessage(String target, String encryptedText, String senderUsername) {
         String time = new java.text.SimpleDateFormat("h:mm a").format(new java.util.Date());
         int senderId = getUserId(senderUsername);
@@ -834,13 +875,21 @@ public class ClientHandler extends Thread {
             }
 
             // Get User's Posts
-            String postSql = "SELECT content, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
+            // Get User's Posts
+            String postSql = "SELECT content, media_url, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
             PreparedStatement ps3 = conn.prepareStatement(postSql);
             ps3.setInt(1, targetId);
             ResultSet rs3 = ps3.executeQuery();
             while (rs3.next()) {
                 postCount++;
-                postsBuilder.append(rs3.getString("content")).append("^").append(rs3.getString("time_str")).append("~");
+                String text = rs3.getString("content");
+                String media = rs3.getString("media_url");
+                
+                String payload = text != null ? text : "";
+                if (media != null && !media.isEmpty() && !media.equals("null")) {
+                    payload += "<br>[IMG]" + media;
+                }
+                postsBuilder.append(payload).append("^").append(rs3.getString("time_str")).append("~");
             }
         } catch (Exception e) {
             dashboard.log("Profile DB Error: " + e.getMessage());
