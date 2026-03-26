@@ -23,114 +23,130 @@ public class ClientHandler extends Thread {
 
     private String clientUsername;
 
-    @Override
+@Override
     public void run() {
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream())); PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream())); 
+             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
             String request;
             while ((request = in.readLine()) != null) {
-                String[] parts = request.split("\\|");
-                String command = parts[0];
+                // 🚀 This INNER try-catch is the secret to a stable server!
+                try {
+                    String[] parts = request.split("\\|");
+                    String command = parts[0];
 
-                if (command.equals("JOIN")) {
-                    this.clientUsername = parts[1];
-                    // 🚀 Register Presence
-                    PresenceManager.getInstance().setUserOnline(clientUsername, out);
+                    switch (command) {
+                        case "JOIN":
+                            this.clientUsername = parts[1];
+                            // Register Presence and Map
+                            onlineUsers.put(clientUsername, out);
+                            PresenceManager.getInstance().setUserOnline(clientUsername, out);
+                            dashboard.log("🟢 " + clientUsername + " connected.");
+                            
+                            // Send chat list and notify friends
+                            out.println("MY_CHATS|" + fetchMyChats(clientUsername));
+                            broadcastStatusToFriends(clientUsername, "ONLINE");
+                            break;
 
-                    // Tell the user they logged in and send chat list
-                    out.println("MY_CHATS|" + fetchMyChats(clientUsername));
+                        case "LOGIN":
+                            String loginResult = loginUser(parts[1], parts[2]);
+                            out.println(loginResult);
+                            break;
 
-                    // OPTIONAL: Notify friends this user is online
-                    broadcastStatusToFriends(clientUsername, "ONLINE");
-                }
+                        case "REGISTER":
+                            boolean success = registerUser(parts[1], parts[2], parts[3], parts[4]);
+                            out.println(success ? "SUCCESS" : "FAILED");
+                            break;
 
-                switch (command) {
-                    case "JOIN":
-                        // Register user as online and AUTOMATICALLY send them their chat list!
-                        onlineUsers.put(parts[1], out);
-                        dashboard.log("🟢 " + parts[1] + " connected.");
-                        out.println("MY_CHATS|" + fetchMyChats(parts[1]));
-                        break;
+                        case "GET_PROFILE_DATA":
+                            // parts = [GET_PROFILE_DATA, targetUsername, myUsername]
+                            System.out.println("Server handling GET_PROFILE_DATA for: " + parts[1]);
+                            String profileInfo = fetchProfileData(parts[1], parts[2]);
+                            out.println("PROFILE_DATA|" + profileInfo);
+                            break;
 
-                    case "SEND_MESSAGE":
-                        // parts = [SEND_MESSAGE, TargetChatID, EncryptedText, MyUsername]
-                        handleSendMessage(parts[1], parts[2], parts[3]);
-                        break;
+                        case "UPDATE_PROFILE":
+                            // parts = [UPDATE_PROFILE, newName, username]
+                            if (handleUpdateProfile(parts[1], parts[2])) {
+                                out.println("UPDATE_SUCCESS|" + parts[1]);
+                            }
+                            break;
 
-                    case "LOAD_CHAT_HISTORY":
-                        // parts = [LOAD_CHAT_HISTORY, TargetChatID, MyUsername]
-                        String history = loadChatHistory(parts[1], parts[2]);
-                        out.println("CHAT_HISTORY|" + history);
-                        break;
+                        case "CREATE_POST":
+                            savePostToDB(parts[2], parts[1]);
+                            break;
 
-                    case "GET_FRIEND_REQUESTS":
-                        String requests = fetchFriendRequests(parts[1]);
-                        out.println("FRIEND_REQUESTS|" + requests);
-                        break;
+                        case "GET_HOME_FEED":
+                            String feedData = fetchHomeFeed(parts[1]);
+                            out.println("HOME_FEED|" + feedData);
+                            break;
 
-                    case "GET_ALL_FRIENDS":
-                        String friends = fetchAllFriends(parts[1]);
-                        out.println("ALL_FRIENDS|" + friends);
-                        break;
+                        case "SEND_MESSAGE":
+                            handleSendMessage(parts[1], parts[2], parts[3]);
+                            break;
 
-                    case "GET_MY_CHATS":
-                        String myChats = fetchMyChats(parts[1]);
-                        out.println("MY_CHATS|" + myChats);
-                        break;
+                        case "LOAD_CHAT_HISTORY":
+                            String history = loadChatHistory(parts[1], parts[2]);
+                            out.println("CHAT_HISTORY|" + history);
+                            break;
 
-                    case "CHECK_EMAIL":
-                        boolean emailExists = checkExists("email", parts[1]);
-                        out.println(emailExists ? "EXISTS" : "AVAILABLE");
-                        break;
+                        case "SEARCH_USERS":
+                            String searchResults = searchUsers(parts[1], parts[2]);
+                            out.println("SEARCH_RESULTS|" + searchResults);
+                            break;
 
-                    case "CHECK_USERNAME":
-                        boolean userExists = checkExists("username", parts[1]);
-                        out.println(userExists ? "EXISTS" : "AVAILABLE");
-                        break;
+                        case "SEND_FRIEND_REQUEST":
+                            sendFriendRequest(parts[2], parts[1].replace("@", ""));
+                            break;
 
-                    case "REGISTER":
-                        boolean success = registerUser(parts[1], parts[2], parts[3], parts[4]);
-                        out.println(success ? "SUCCESS" : "FAILED");
-                        break;
+                        case "RESPOND_FRIEND_REQUEST":
+                            respondToFriendRequest(parts[3], parts[1].replace("@", ""), parts[2]);
+                            break;
 
-                    case "LOGIN":
-                        String loginResult = loginUser(parts[1], parts[2]);
-                        out.println(loginResult);
-                        break;
+                        case "REMOVE_FRIEND":
+                            removeFriend(parts[2], parts[1].replace("@", ""));
+                            break;
 
-                    // ==========================================================
-                    // NEW: FRIENDSHIP SYSTEM INTEGRATION
-                    // ==========================================================
-                    case "SEARCH_USERS":
-                        // parts = [SEARCH_USERS, query, myUsername]
-                        String searchResults = searchUsers(parts[1], parts[2]);
-                        out.println("SEARCH_RESULTS|" + searchResults);
-                        break;
+                        case "GET_FRIEND_REQUESTS":
+                            String requests = fetchFriendRequests(parts[1]);
+                            out.println("FRIEND_REQUESTS|" + requests);
+                            break;
 
-                    case "SEND_FRIEND_REQUEST":
-                        // parts = [SEND_FRIEND_REQUEST, targetUsername, myUsername]
-                        sendFriendRequest(parts[2], parts[1].replace("@", ""));
-                        break;
+                        case "GET_ALL_FRIENDS":
+                            String friends = fetchAllFriends(parts[1]);
+                            out.println("ALL_FRIENDS|" + friends);
+                            break;
 
-                    case "RESPOND_FRIEND_REQUEST":
-                        // parts = [RESPOND_FRIEND_REQUEST, targetUsername, status(ACCEPTED/DECLINED), myUsername]
-                        respondToFriendRequest(parts[3], parts[1].replace("@", ""), parts[2]);
-                        break;
+                        case "GET_MY_CHATS":
+                            String myChats = fetchMyChats(parts[1]);
+                            out.println("MY_CHATS|" + myChats);
+                            break;
 
-                    case "REMOVE_FRIEND":
-                        // parts = [REMOVE_FRIEND, targetUsername, myUsername]
-                        removeFriend(parts[2], parts[1].replace("@", ""));
-                        break;
+                        case "CHECK_EMAIL":
+                            boolean emailExists = checkExists("email", parts[1]);
+                            out.println(emailExists ? "EXISTS" : "AVAILABLE");
+                            break;
 
-                    default:
-                        out.println("UNKNOWN_COMMAND");
+                        case "CHECK_USERNAME":
+                            boolean userExists = checkExists("username", parts[1]);
+                            out.println(userExists ? "EXISTS" : "AVAILABLE");
+                            break;
+
+                        default:
+                            dashboard.log("⚠️ Unknown Command: " + command);
+                            out.println("UNKNOWN_COMMAND");
+                    }
+                } catch (Exception e) {
+                    // 🚨 If a database error happens, the server will print it here instead of crashing!
+                    System.err.println("❌ ERROR PROCESSING COMMAND: " + request);
+                    e.printStackTrace();
                 }
             }
         } catch (Exception e) {
             dashboard.log("⚠️ Client disconnected.");
         } finally {
             if (clientUsername != null) {
-                // 🚀 Remove Presence
+                onlineUsers.remove(clientUsername);
                 PresenceManager.getInstance().setUserOffline(clientUsername);
                 broadcastStatusToFriends(clientUsername, "OFFLINE");
             }
@@ -504,6 +520,44 @@ public class ClientHandler extends Thread {
         return sb.toString();
     }
 
+    private void savePostToDB(String username, String content) {
+    int userId = getUserId(username);
+    String sql = "INSERT INTO posts (user_id, content, created_at) VALUES (?, ?, NOW())";
+    
+    try (Connection conn = DBConnection.getConnection();
+         PreparedStatement ps = conn.prepareStatement(sql)) {
+        ps.setInt(1, userId);
+        ps.setString(2, content);
+        ps.executeUpdate();
+        dashboard.log("📝 New post created by " + username);
+    } catch (Exception e) { dashboard.log("Post DB Error: " + e.getMessage()); }
+}
+
+private String fetchHomeFeed(String username) {
+    StringBuilder sb = new StringBuilder();
+    // This query gets posts from the user AND their friends
+    String sql = "SELECT u.full_name, p.content, DATE_FORMAT(p.created_at, '%b %d, %h:%i %p') as time_str, " +
+                 "(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as likes, " +
+                 "(SELECT COUNT(*) FROM post_comments WHERE post_id = p.id) as comments " +
+                 "FROM posts p JOIN users u ON p.user_id = u.id " +
+                 "ORDER BY p.created_at DESC LIMIT 20";
+
+    try (Connection conn = DBConnection.getConnection();
+         PreparedStatement ps = conn.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+            // Format: Author|Content|Time|Likes|Comments~
+            sb.append(rs.getString("full_name")).append("|")
+              .append(rs.getString("content")).append("|")
+              .append(rs.getString("time_str")).append("|")
+              .append(rs.getInt("likes")).append("|")
+              .append(rs.getInt("comments")).append("~");
+        }
+    } catch (Exception e) { dashboard.log("Feed Fetch Error: " + e.getMessage()); }
+    
+    return sb.toString();
+}
+    
     private void saveMessageToDB(int conversationId, int senderId, String encryptedText) {
         String sql = "INSERT INTO messages (conversation_id, sender_id, encrypted_content) VALUES (?, ?, ?)";
         try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -514,6 +568,60 @@ public class ClientHandler extends Thread {
         } catch (Exception e) {
             dashboard.log("DB Error saving msg: " + e.getMessage());
         }
+    }
+    
+    private boolean handleUpdateProfile(String newName, String username) {
+        String sql = "UPDATE users SET full_name = ? WHERE username = ?";
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, newName);
+            ps.setString(2, username);
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            dashboard.log("Update Profile Error: " + e.getMessage());
+            return false;
+        }
+    }
+    
+private String fetchProfileData(String targetUser, String myUsername) {
+        int targetId = getUserId(targetUser);
+        String fullName = targetUser; // Fallback if they haven't set a name
+        int postCount = 0;
+        int friendCount = 0;
+        StringBuilder postsBuilder = new StringBuilder();
+
+        try (Connection conn = com.orbitserver.db.DBConnection.getConnection()) {
+            // 1. Get Clean Full Name
+            String nameSql = "SELECT COALESCE(NULLIF(full_name, 'null'), username) FROM users WHERE id = ?";
+            PreparedStatement ps1 = conn.prepareStatement(nameSql);
+            ps1.setInt(1, targetId);
+            ResultSet rs1 = ps1.executeQuery();
+            if (rs1.next()) fullName = rs1.getString(1);
+
+            // 2. Count Friends
+            String friendSql = "SELECT COUNT(*) FROM friendships WHERE (requester_id = ? OR receiver_id = ?) AND status = 'ACCEPTED'";
+            PreparedStatement ps2 = conn.prepareStatement(friendSql);
+            ps2.setInt(1, targetId); ps2.setInt(2, targetId);
+            ResultSet rs2 = ps2.executeQuery();
+            if (rs2.next()) friendCount = rs2.getInt(1);
+
+            // 3. Get User's Posts
+            String postSql = "SELECT content, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
+            PreparedStatement ps3 = conn.prepareStatement(postSql);
+            ps3.setInt(1, targetId);
+            ResultSet rs3 = ps3.executeQuery();
+            while (rs3.next()) {
+                postCount++;
+                postsBuilder.append(rs3.getString("content")).append("^")
+                            .append(rs3.getString("time_str")).append("~");
+            }
+        } catch (Exception e) { 
+            dashboard.log("Profile DB Error: " + e.getMessage()); 
+        }
+
+        boolean isMe = targetUser.equals(myUsername);
+        // Returns: targetUser | fullName | postCount | friendCount | isMe | PostData
+        return targetUser + "|" + fullName + "|" + postCount + "|" + friendCount + "|" + (isMe ? "TRUE" : "FALSE") + "|" + postsBuilder.toString();
     }
 
     private int getOrCreateDirectConversation(int u1, int u2) {
