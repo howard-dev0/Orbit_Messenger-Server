@@ -194,6 +194,30 @@ public class ClientHandler extends Thread {
                             boolean userExists = checkExists("username", parts[1]);
                             out.println(userExists ? "EXISTS" : "AVAILABLE");
                             break;
+                        case "GET_GROUP_MEMBERS":
+                            // parts = [GET_GROUP_MEMBERS, groupId]
+                            out.println("GROUP_MEMBERS_LIST|" + fetchGroupMembers(parts[1]));
+                            break;
+
+                        case "GET_GROUP_INFO":
+                            // parts = [GET_GROUP_INFO, groupId]
+                            out.println(fetchGroupInfo(parts[1]));
+                            break;
+
+                        case "ADD_TO_GROUP":
+                            // parts = [ADD_TO_GROUP, groupId, targetUser]
+                            handleAddToGroup(parts[1], parts[2]);
+                            break;
+
+                        case "REMOVE_FROM_GROUP":
+                            // parts = [REMOVE_FROM_GROUP, groupId, targetUser, requester]
+                            handleRemoveFromGroup(parts[1], parts[2], parts[3]);
+                            break;
+
+                        case "UPDATE_GROUP_AVATAR":
+                            // parts = [UPDATE_GROUP_AVATAR, groupId, base64]
+                            updateGroupAvatar(parts[1], parts[2]);
+                            break;
 
                         default:
                             dashboard.log("⚠️ Unknown Command: " + command);
@@ -719,9 +743,10 @@ public class ClientHandler extends Thread {
 
         // 2. Perform all Group INSERT operations safely
         try (Connection conn = DBConnection.getConnection()) {
-            String createConvoSql = "INSERT INTO conversations (type, group_name) VALUES ('GROUP', ?)";
+            String createConvoSql = "INSERT INTO conversations (type, group_name, creator_username) VALUES ('GROUP', ?, ?)";
             PreparedStatement ps = conn.prepareStatement(createConvoSql, java.sql.Statement.RETURN_GENERATED_KEYS);
             ps.setString(1, groupName);
+            ps.setString(2, creator); // Save the creator's username
             ps.executeUpdate();
 
             int convoId = -1;
@@ -817,6 +842,137 @@ public class ClientHandler extends Thread {
         // 🚀 UPGRADED RETURN: Notice we added avatarBase64 right before the posts data
         // Format: targetUser | fullName | postCount | friendCount | isMe | avatarBase64 | PostData
         return targetUser + "|" + fullName + "|" + postCount + "|" + friendCount + "|" + (isMe ? "TRUE" : "FALSE") + "|" + avatarBase64 + "|" + postsBuilder.toString();
+    }
+
+    private String fetchGroupMembers(String gid) {
+        StringBuilder sb = new StringBuilder();
+        String groupId = gid.replace("GROUP_", "");
+        // Returns: username:fullname:isCreator,
+        String sql = "SELECT u.username, u.full_name, c.creator_username "
+                + "FROM chat_members cm JOIN users u ON cm.user_id = u.id "
+                + "JOIN conversations c ON cm.conversation_id = c.id WHERE c.id = ?";
+        try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, Integer.parseInt(groupId));
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                boolean isCreator = rs.getString("username").equals(rs.getString("creator_username"));
+                sb.append(rs.getString("username")).append(":")
+                        .append(rs.getString("full_name")).append(":")
+                        .append(isCreator ? "TRUE" : "FALSE").append(",");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return sb.toString();
+    }
+
+    private void handleAddToGroup(String gid, String target) {
+        int targetId = getUserId(target);
+        int groupId = Integer.parseInt(gid.replace("GROUP_", ""));
+        try (Connection conn = DBConnection.getConnection()) {
+            // Give them a generic key for now (In a real production app, the creator would encrypt a key for them)
+            String sql = "INSERT IGNORE INTO chat_members (conversation_id, user_id, encrypted_key) VALUES (?, ?, 'PENDING_KEY')";
+            PreparedStatement ps = conn.prepareStatement(sql);
+            ps.setInt(1, groupId);
+            ps.setInt(2, targetId);
+            ps.executeUpdate();
+
+            PrintWriter out = onlineUsers.get(target);
+            if (out != null) {
+                out.println("MY_CHATS|" + fetchMyChats(target));
+            }
+            dashboard.log("➕ " + target + " added to group " + groupId);
+        } catch (Exception e) {
+            dashboard.log("Add Member Error: " + e.getMessage());
+        }
+    }
+
+    private void handleRemoveFromGroup(String gid, String target, String requester) {
+        String groupId = gid.replace("GROUP_", "");
+        try (Connection conn = DBConnection.getConnection()) {
+            // Security Check: Only the creator can kick people
+            String checkSql = "SELECT creator_username FROM conversations WHERE id = ?";
+            PreparedStatement psCheck = conn.prepareStatement(checkSql);
+            psCheck.setInt(1, Integer.parseInt(groupId));
+            ResultSet rs = psCheck.executeQuery();
+            if (rs.next() && rs.getString("creator_username").equals(requester)) {
+                String sql = "DELETE FROM chat_members WHERE conversation_id = ? AND user_id = (SELECT id FROM users WHERE username = ?)";
+                PreparedStatement ps = conn.prepareStatement(sql);
+                ps.setInt(1, Integer.parseInt(groupId));
+                ps.setString(2, target);
+                ps.executeUpdate();
+
+                PrintWriter out = onlineUsers.get(target);
+                if (out != null) {
+                    out.println("MY_CHATS|" + fetchMyChats(target));
+                }
+                dashboard.log("👢 " + target + " was kicked from group " + groupId + " by " + requester);
+            }
+        } catch (Exception e) {
+            dashboard.log("Remove Member Error: " + e.getMessage());
+        }
+    }
+
+    private void updateGroupAvatar(String gid, String base64) {
+        String groupId = gid.replace("GROUP_", "");
+        try (Connection conn = DBConnection.getConnection()) {
+            String sql = "UPDATE conversations SET avatar = ? WHERE id = ?";
+            PreparedStatement ps = conn.prepareStatement(sql);
+            ps.setString(1, base64);
+            ps.setInt(2, Integer.parseInt(groupId));
+            ps.executeUpdate();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private String fetchGroupInfo(String gid) {
+        String groupId = gid.replace("GROUP_", "");
+        String groupName = "Group Chat";
+        String avatar = "default";
+        String creator = "";
+        StringBuilder members = new StringBuilder();
+
+        try (Connection conn = DBConnection.getConnection()) {
+            // 1. Get Group Details
+            String sql = "SELECT group_name, avatar, creator_username FROM conversations WHERE id = ?";
+            PreparedStatement ps = conn.prepareStatement(sql);
+            ps.setInt(1, Integer.parseInt(groupId));
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                if (rs.getString("group_name") != null) {
+                    groupName = rs.getString("group_name");
+                }
+                if (rs.getString("avatar") != null) {
+                    avatar = rs.getString("avatar");
+                }
+                if (rs.getString("creator_username") != null) {
+                    creator = rs.getString("creator_username");
+                }
+            }
+
+            // 2. Get All Members
+            String memSql = "SELECT u.username, u.full_name, u.avatar FROM chat_members cm JOIN users u ON cm.user_id = u.id WHERE cm.conversation_id = ?";
+            PreparedStatement psMem = conn.prepareStatement(memSql);
+            psMem.setInt(1, Integer.parseInt(groupId));
+            ResultSet rsMem = psMem.executeQuery();
+            while (rsMem.next()) {
+                String uName = rsMem.getString("username");
+                String fName = rsMem.getString("full_name");
+                if (fName == null || fName.equals("null")) {
+                    fName = uName;
+                }
+                String memAvatar = rsMem.getString("avatar") != null ? rsMem.getString("avatar") : "default";
+
+                // Pack it as: username^fullname^avatar~
+                members.append(uName).append("^").append(fName).append("^").append(memAvatar).append("~");
+            }
+        } catch (Exception e) {
+            dashboard.log("Fetch Group Info Error: " + e.getMessage());
+        }
+
+        // Format: GROUP_INFO_DATA | ID | Name | Avatar | Creator | MembersList
+        return "GROUP_INFO_DATA|" + gid + "|" + groupName + "|" + avatar + "|" + creator + "|" + members.toString();
     }
 
     private int getOrCreateDirectConversation(int u1, int u2) {
