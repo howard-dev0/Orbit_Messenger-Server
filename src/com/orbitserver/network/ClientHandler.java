@@ -46,6 +46,14 @@ public class ClientHandler extends Thread {
                             out.println("MY_CHATS|" + fetchMyChats(clientUsername));
                             broadcastStatusToFriends(clientUsername, "ONLINE");
                             break;
+                        case "VIDEO_FRAME":
+                            // parts = [VIDEO_FRAME, targetUser, sender, base64Frame]
+                            PrintWriter frameOut = onlineUsers.get(parts[1]);
+                            if (frameOut != null) {
+                                // We use a shorter prefix 'VF' to save network bandwidth
+                                frameOut.println("VF|" + parts[2] + "|" + parts[3]);
+                            }
+                            break;
 
                         case "VIDEO_CALL_REQUEST":
                             // parts = [VIDEO_CALL_REQUEST, targetUser, myUsername]
