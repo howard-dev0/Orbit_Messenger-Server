@@ -47,6 +47,32 @@ public class ClientHandler extends Thread {
                             broadcastStatusToFriends(clientUsername, "ONLINE");
                             break;
 
+                        case "VIDEO_CALL_REQUEST":
+                            // parts = [VIDEO_CALL_REQUEST, targetUser, myUsername]
+                            PrintWriter targetOut = onlineUsers.get(parts[1]);
+                            if (targetOut != null) {
+                                targetOut.println("INCOMING_CALL|" + parts[2]);
+                            } else {
+                                out.println("CALL_ERROR|User is offline");
+                            }
+                            break;
+
+                        case "VIDEO_CALL_ACCEPT":
+                            // parts = [VIDEO_CALL_ACCEPT, requester, myUsername]
+                            PrintWriter requesterOut = onlineUsers.get(parts[1]);
+                            if (requesterOut != null) {
+                                // Tell the requester we accepted and give them our IP for streaming
+                                requesterOut.println("CALL_ACCEPTED|" + parts[2] + "|" + socket.getInetAddress().getHostAddress());
+                            }
+                            break;
+
+                        case "VIDEO_CALL_REJECT":
+                            PrintWriter rejectOut = onlineUsers.get(parts[1]);
+                            if (rejectOut != null) {
+                                rejectOut.println("CALL_REJECTED|" + parts[2]);
+                            }
+                            break;
+
                         case "DELETE_POST":
                             // parts = [DELETE_POST, username, postId]
                             String delSql = "DELETE FROM posts WHERE id = ? AND user_id = (SELECT id FROM users WHERE username = ?)";
@@ -745,7 +771,7 @@ public class ClientHandler extends Thread {
         }
     }
 
- private String fetchHomeFeed(String username) {
+    private String fetchHomeFeed(String username) {
         StringBuilder sb = new StringBuilder();
         // UPGRADED: Now fetches p.id (Post ID) and u.username
         String sql = "SELECT p.id, u.username, COALESCE(NULLIF(u.full_name, 'null'), u.username) as author, "
@@ -760,19 +786,19 @@ public class ClientHandler extends Thread {
                 String text = rs.getString("content");
                 String media = rs.getString("media_url");
                 String payload = text != null ? text : "";
-                
+
                 if (media != null && !media.isEmpty() && !media.equals("null")) {
                     payload += "<br>[IMG]" + media;
                 }
-                
+
                 // NEW FORMAT: postId | username | author | payload | time | likes | comments ~
                 sb.append(rs.getInt("id")).append("|")
-                  .append(rs.getString("username")).append("|")
-                  .append(rs.getString("author")).append("|")
-                  .append(payload).append("|")
-                  .append(rs.getString("time_str")).append("|")
-                  .append(rs.getInt("likes")).append("|")
-                  .append(rs.getInt("comments")).append("~");
+                        .append(rs.getString("username")).append("|")
+                        .append(rs.getString("author")).append("|")
+                        .append(payload).append("|")
+                        .append(rs.getString("time_str")).append("|")
+                        .append(rs.getInt("likes")).append("|")
+                        .append(rs.getInt("comments")).append("~");
             }
         } catch (Exception e) {
             dashboard.log("Feed Fetch Error: " + e.getMessage());
@@ -900,7 +926,7 @@ public class ClientHandler extends Thread {
                 friendCount = rs2.getInt(1);
             }
 
-           // Get User's Posts
+            // Get User's Posts
             // UPGRADED: Added 'id' to the SELECT statement
             String postSql = "SELECT id, content, media_url, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
             PreparedStatement ps3 = conn.prepareStatement(postSql);
@@ -910,12 +936,12 @@ public class ClientHandler extends Thread {
                 postCount++;
                 String text = rs3.getString("content");
                 String media = rs3.getString("media_url");
-                
+
                 String payload = text != null ? text : "";
                 if (media != null && !media.isEmpty() && !media.equals("null")) {
                     payload += "<br>[IMG]" + media;
                 }
-                
+
                 postsBuilder.append(rs3.getInt("id")).append("^").append(payload).append("^").append(rs3.getString("time_str")).append("~");
             }
         } catch (Exception e) {
