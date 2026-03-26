@@ -47,6 +47,18 @@ public class ClientHandler extends Thread {
                             broadcastStatusToFriends(clientUsername, "ONLINE");
                             break;
 
+                        case "DELETE_POST":
+                            // parts = [DELETE_POST, username, postId]
+                            String delSql = "DELETE FROM posts WHERE id = ? AND user_id = (SELECT id FROM users WHERE username = ?)";
+                            try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(delSql)) {
+                                ps.setInt(1, Integer.parseInt(parts[2]));
+                                ps.setString(2, parts[1]);
+                                ps.executeUpdate();
+                                dashboard.log("🗑️ " + parts[1] + " deleted a post.");
+                            } catch (Exception e) {
+                                dashboard.log("Delete Post Error: " + e.getMessage());
+                            }
+                            break;
                         case "GET_HOME_FEED":
                             StringBuilder feed = new StringBuilder();
                             try (Connection conn = DBConnection.getConnection()) {
@@ -165,37 +177,38 @@ public class ClientHandler extends Thread {
                             }
                             break;
 
-                       case "CREATE_POST":
-        // Expected Format: CREATE_POST | username | textContent | base64Image
-        String postUser = parts.length > 1 ? parts[1] : null;
-        String postText = parts.length > 2 ? parts[2] : "null";
-        String postMedia = parts.length > 3 ? parts[3] : "null";
+                        case "CREATE_POST":
+                            // Expected Format: CREATE_POST | username | textContent | base64Image
+                            String postUser = parts.length > 1 ? parts[1] : null;
+                            String postText = parts.length > 2 ? parts[2] : "null";
+                            String postMedia = parts.length > 3 ? parts[3] : "null";
 
-        if (postUser == null) break; // Invalid packet
+                            if (postUser == null) {
+                                break; // Invalid packet
+                            }
+                            if (postText.equals("null") || postText.trim().isEmpty()) {
+                                postText = null; // Set to null for DB insertion if empty
+                            }
 
-        if (postText.equals("null") || postText.trim().isEmpty()) {
-            postText = null; // Set to null for DB insertion if empty
-        }
-        
-        if (postMedia.equals("null") || postMedia.trim().isEmpty()) {
-            postMedia = null; // Set to null for DB insertion if empty
-        }
+                            if (postMedia.equals("null") || postMedia.trim().isEmpty()) {
+                                postMedia = null; // Set to null for DB insertion if empty
+                            }
 
-        try (Connection conn = DBConnection.getConnection()) {
-            // 🚀 THE FIX: Renamed 'sql' to 'postSql' to avoid variable conflicts!
-            String postSql = "INSERT INTO posts (user_id, content, media_url, created_at) VALUES ((SELECT id FROM users WHERE username = ?), ?, ?, NOW())";
-            PreparedStatement ps = conn.prepareStatement(postSql);
-            ps.setString(1, postUser);
-            ps.setString(2, postText);
-            ps.setString(3, postMedia);
-            
-            ps.executeUpdate();
-            dashboard.log("📝 " + postUser + " created a new post with media.");
-        } catch (Exception e) {
-            dashboard.log("Post DB Error: " + e.getMessage());
-            e.printStackTrace(); // Print to console for debugging
-        }
-        break;
+                            try (Connection conn = DBConnection.getConnection()) {
+                                // THE FIX: Renamed 'sql' to 'postSql' to avoid variable conflicts!
+                                String postSql = "INSERT INTO posts (user_id, content, media_url, created_at) VALUES ((SELECT id FROM users WHERE username = ?), ?, ?, NOW())";
+                                PreparedStatement ps = conn.prepareStatement(postSql);
+                                ps.setString(1, postUser);
+                                ps.setString(2, postText);
+                                ps.setString(3, postMedia);
+
+                                ps.executeUpdate();
+                                dashboard.log("📝 " + postUser + " created a new post with media.");
+                            } catch (Exception e) {
+                                dashboard.log("Post DB Error: " + e.getMessage());
+                                e.printStackTrace(); // Print to console for debugging
+                            }
+                            break;
 
                         case "CREATE_GROUP":
                             // parts = [CREATE_GROUP, groupName, creator, membersStr, keysStr]
@@ -732,9 +745,11 @@ public class ClientHandler extends Thread {
         }
     }
 
-    private String fetchHomeFeed(String username) {
+ private String fetchHomeFeed(String username) {
         StringBuilder sb = new StringBuilder();
-        String sql = "SELECT u.full_name, p.content, DATE_FORMAT(p.created_at, '%b %d, %h:%i %p') as time_str, "
+        // UPGRADED: Now fetches p.id (Post ID) and u.username
+        String sql = "SELECT p.id, u.username, COALESCE(NULLIF(u.full_name, 'null'), u.username) as author, "
+                + "p.content, p.media_url, DATE_FORMAT(p.created_at, '%b %d, %h:%i %p') as time_str, "
                 + "(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as likes, "
                 + "(SELECT COUNT(*) FROM post_comments WHERE post_id = p.id) as comments "
                 + "FROM posts p JOIN users u ON p.user_id = u.id "
@@ -742,11 +757,22 @@ public class ClientHandler extends Thread {
 
         try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                sb.append(rs.getString("full_name")).append("|")
-                        .append(rs.getString("content")).append("|")
-                        .append(rs.getString("time_str")).append("|")
-                        .append(rs.getInt("likes")).append("|")
-                        .append(rs.getInt("comments")).append("~");
+                String text = rs.getString("content");
+                String media = rs.getString("media_url");
+                String payload = text != null ? text : "";
+                
+                if (media != null && !media.isEmpty() && !media.equals("null")) {
+                    payload += "<br>[IMG]" + media;
+                }
+                
+                // NEW FORMAT: postId | username | author | payload | time | likes | comments ~
+                sb.append(rs.getInt("id")).append("|")
+                  .append(rs.getString("username")).append("|")
+                  .append(rs.getString("author")).append("|")
+                  .append(payload).append("|")
+                  .append(rs.getString("time_str")).append("|")
+                  .append(rs.getInt("likes")).append("|")
+                  .append(rs.getInt("comments")).append("~");
             }
         } catch (Exception e) {
             dashboard.log("Feed Fetch Error: " + e.getMessage());
@@ -874,9 +900,9 @@ public class ClientHandler extends Thread {
                 friendCount = rs2.getInt(1);
             }
 
-            // Get User's Posts
-            // Get User's Posts
-            String postSql = "SELECT content, media_url, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
+           // Get User's Posts
+            // UPGRADED: Added 'id' to the SELECT statement
+            String postSql = "SELECT id, content, media_url, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
             PreparedStatement ps3 = conn.prepareStatement(postSql);
             ps3.setInt(1, targetId);
             ResultSet rs3 = ps3.executeQuery();
@@ -889,7 +915,8 @@ public class ClientHandler extends Thread {
                 if (media != null && !media.isEmpty() && !media.equals("null")) {
                     payload += "<br>[IMG]" + media;
                 }
-                postsBuilder.append(payload).append("^").append(rs3.getString("time_str")).append("~");
+                
+                postsBuilder.append(rs3.getInt("id")).append("^").append(payload).append("^").append(rs3.getString("time_str")).append("~");
             }
         } catch (Exception e) {
             dashboard.log("Profile DB Error: " + e.getMessage());
