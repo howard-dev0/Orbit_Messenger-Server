@@ -29,7 +29,7 @@ public class ClientHandler extends Thread {
 
             String request;
             while ((request = in.readLine()) != null) {
-                // 🚀 This INNER try-catch is the secret to a stable server!
+                // This INNER try-catch is the secret to a stable server!
                 try {
                     String[] parts = request.split("\\|");
                     String command = parts[0];
@@ -74,6 +74,13 @@ public class ClientHandler extends Thread {
                                 dashboard.log("Rename Group Error: " + e.getMessage());
                             }
                             break;
+
+                        case "GET_SUGGESTED_USERS":
+                            // parts = [GET_SUGGESTED_USERS, myUsername]
+                            String suggestions = fetchSuggestedUsers(parts[1]);
+                            out.println("SUGGESTED_USERS|" + suggestions);
+                            break;
+
                         case "LEAVE_GROUP":
                             // parts = [LEAVE_GROUP, groupId, username]
                             String groupIdStr = parts[1].replace("GROUP_", "");
@@ -224,7 +231,7 @@ public class ClientHandler extends Thread {
                             out.println("UNKNOWN_COMMAND");
                     }
                 } catch (Exception e) {
-                    // 🚨 If a database error happens, the server will print it here instead of crashing!
+                    // If a database error happens, the server will print it here instead of crashing!
                     System.err.println("❌ ERROR PROCESSING COMMAND: " + request);
                     e.printStackTrace();
                 }
@@ -261,7 +268,7 @@ public class ClientHandler extends Thread {
                 while (rs.next()) {
                     String friendUsername = rs.getString("username");
 
-                    // 🚀 If the friend is online, send them the update packet
+                    // If the friend is online, send them the update packet
                     PrintWriter friendOut = PresenceManager.getInstance().getUserOutput(friendUsername);
                     if (friendOut != null) {
                         // Format: UPDATE_STATUS | WhoChanged | NewStatus
@@ -275,9 +282,9 @@ public class ClientHandler extends Thread {
         }
     }
 
-    // ==============================================================
+
     // CORE DATABASE HELPERS
-    // ==============================================================
+
     // Helper: Converts a username string into their Database ID integer
     private int getUserId(String username) {
         String sql = "SELECT id FROM users WHERE username = ?";
@@ -307,9 +314,10 @@ public class ClientHandler extends Thread {
         }
     }
 
-    // ==============================================================
+   
     // FRIENDSHIP LOGIC
-    // ==============================================================
+
+    
     private String searchUsers(String query, String myUsername) {
         StringBuilder sb = new StringBuilder();
         // Look for users that match the search, but exclude myself
@@ -368,7 +376,7 @@ public class ClientHandler extends Thread {
             ps.executeUpdate();
             dashboard.log(myUsername + " accepted friend request from " + targetUsername);
 
-            // 🚀 THE FIX: Instantly push the new chat lists to BOTH users if they are online!
+            // push the new chat lists to BOTH users if they are online!
             PrintWriter myOut = PresenceManager.getInstance().getUserOutput(myUsername);
             if (myOut != null) {
                 myOut.println("MY_CHATS|" + fetchMyChats(myUsername));
@@ -401,7 +409,7 @@ public class ClientHandler extends Thread {
             ps.executeUpdate();
             dashboard.log("Friendship severed between " + myUsername + " and " + targetUsername);
 
-            // 🚀 THE FIX: Instantly push the updated chat lists to BOTH users!
+            // instantly push the updated chat lists to BOTH users!
             PrintWriter myOut = PresenceManager.getInstance().getUserOutput(myUsername);
             if (myOut != null) {
                 myOut.println("MY_CHATS|" + fetchMyChats(myUsername));
@@ -417,9 +425,9 @@ public class ClientHandler extends Thread {
         }
     }
 
-    // ==============================================================
+ 
     // ACCOUNT LOGIC
-    // ==============================================================
+
     private String loginUser(String username, String passwordHash) {
         String sql = "SELECT full_name FROM users WHERE username = ? AND password = ?";
         try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -548,7 +556,7 @@ public class ClientHandler extends Thread {
             ps.setInt(1, myUserId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    // 🚀 4 parts (ID ~ Name ~ Type ~ Status)
+                    // 4 parts (ID ~ Name ~ Type ~ Status)
                     sb.append("GROUP_").append(rs.getInt("id")).append("~")
                             .append(rs.getString("group_name")).append("~")
                             .append("GROUP").append("~")
@@ -562,14 +570,15 @@ public class ClientHandler extends Thread {
         return sb.toString();
     }
 
-    // ==============================================================
+    
     // MESSAGING & ROUTING ENGINE
-    // ==============================================================
+  
+    
     private void handleSendMessage(String target, String encryptedText, String senderUsername) {
         String time = new java.text.SimpleDateFormat("h:mm a").format(new java.util.Date());
         int senderId = getUserId(senderUsername);
 
-        // 🚀 FETCH AVATAR & NAME FOR LIVE MESSAGES
+        // FETCH AVATAR & NAME FOR LIVE MESSAGES
         String senderFullName = senderUsername;
         String senderAvatar = "default";
         String nameSql = "SELECT COALESCE(NULLIF(full_name, 'null'), username), avatar FROM users WHERE id = ?";
@@ -600,7 +609,7 @@ public class ClientHandler extends Thread {
                         if (!memberUsername.equals(senderUsername)) {
                             PrintWriter memberOut = onlineUsers.get(memberUsername);
                             if (memberOut != null) {
-                                // 🚀 ADDED SENDER AVATAR TO THE END OF THE PACKET
+                                // SENDER AVATAR
                                 memberOut.println("NEW_MESSAGE|" + target + "|" + senderFullName + "|" + encryptedText + "|" + time + "|" + senderAvatar);
                             }
                         }
@@ -618,7 +627,7 @@ public class ClientHandler extends Thread {
 
             PrintWriter receiverOut = onlineUsers.get(target);
             if (receiverOut != null) {
-                // 🚀 ADDED SENDER AVATAR TO THE END OF THE PACKET
+                // ADDED SENDER AVATAR
                 receiverOut.println("NEW_MESSAGE|" + senderUsername + "|" + senderFullName + "|" + encryptedText + "|" + time + "|" + senderAvatar);
             }
         }
@@ -640,7 +649,7 @@ public class ClientHandler extends Thread {
             return "";
         }
 
-        // 🚀 ADDED u.avatar TO THE SQL QUERY
+        // u.avatar TO THE SQL
         String sql = "SELECT u.username, COALESCE(NULLIF(u.full_name, 'null'), u.username) as clean_name, "
                 + "u.avatar, m.encrypted_content, DATE_FORMAT(m.created_at, '%l:%i %p') as time_str "
                 + "FROM messages m JOIN users u ON m.sender_id = u.id "
@@ -654,7 +663,7 @@ public class ClientHandler extends Thread {
                     if (avatar == null) {
                         avatar = "default"; // Fallback to emoji if null
                     }
-                    // 🚀 ADDED AVATAR TO THE HISTORY DATA STRING
+                    // ADDED AVATAR TO THE HISTORY DATA STRING
                     sb.append(rs.getString("clean_name")).append("~")
                             .append(rs.getString("encrypted_content")).append("~")
                             .append(rs.getString("time_str")).append("~")
@@ -729,7 +738,7 @@ public class ClientHandler extends Thread {
         }
     }
 
-    // 🚀 THE FIX: This entire method has been re-written to prevent database connection collisions.
+    // prevent database connection collisions.
     private void handleCreateGroup(String groupName, String creator, String membersStr, String keysStr) {
         String[] members = membersStr.split(",");
         String[] keys = keysStr.split(",");
@@ -796,13 +805,13 @@ public class ClientHandler extends Thread {
     private String fetchProfileData(String targetUser, String myUsername) {
         int targetId = getUserId(targetUser);
         String fullName = targetUser;
-        String avatarBase64 = "default"; // 🚀 NEW: Default avatar flag
+        String avatarBase64 = "default"; // NEW: Default avatar flag
         int postCount = 0;
         int friendCount = 0;
         StringBuilder postsBuilder = new StringBuilder();
 
         try (Connection conn = com.orbitserver.db.DBConnection.getConnection()) {
-            // 🚀 UPGRADED: Now fetches the avatar column too
+            // UPGRADED: Now fetches the avatar column too
             String nameSql = "SELECT COALESCE(NULLIF(full_name, 'null'), username), avatar FROM users WHERE id = ?";
             PreparedStatement ps1 = conn.prepareStatement(nameSql);
             ps1.setInt(1, targetId);
@@ -839,7 +848,7 @@ public class ClientHandler extends Thread {
 
         boolean isMe = targetUser.equals(myUsername);
 
-        // 🚀 UPGRADED RETURN: Notice we added avatarBase64 right before the posts data
+        // UPGRADED RETURN: Notice we added avatarBase64 right before the posts data
         // Format: targetUser | fullName | postCount | friendCount | isMe | avatarBase64 | PostData
         return targetUser + "|" + fullName + "|" + postCount + "|" + friendCount + "|" + (isMe ? "TRUE" : "FALSE") + "|" + avatarBase64 + "|" + postsBuilder.toString();
     }
@@ -973,6 +982,47 @@ public class ClientHandler extends Thread {
 
         // Format: GROUP_INFO_DATA | ID | Name | Avatar | Creator | MembersList
         return "GROUP_INFO_DATA|" + gid + "|" + groupName + "|" + avatar + "|" + creator + "|" + members.toString();
+    }
+
+    private String fetchSuggestedUsers(String myUsername) {
+        StringBuilder sb = new StringBuilder();
+        int myId = getUserId(myUsername);
+        if (myId == -1) {
+            return "";
+        }
+
+        // SMART QUERY: Selects users who are NOT you, and NOT in your friends list
+        String sql = "SELECT username, full_name, avatar FROM users "
+                + "WHERE id != ? AND id NOT IN ("
+                + "SELECT requester_id FROM friendships WHERE receiver_id = ? "
+                + "UNION SELECT receiver_id FROM friendships WHERE requester_id = ?) LIMIT 20";
+
+        try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, myId);
+            ps.setInt(2, myId);
+            ps.setInt(3, myId);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String uName = rs.getString("username");
+                    String fName = rs.getString("full_name");
+                    if (fName == null || fName.equals("null")) {
+                        fName = uName;
+                    }
+
+                    String avatar = rs.getString("avatar");
+                    if (avatar == null) {
+                        avatar = "default";
+                    }
+
+                    // Format: username^fullname^avatar~
+                    sb.append(uName).append("^").append(fName).append("^").append(avatar).append("~");
+                }
+            }
+        } catch (Exception e) {
+            dashboard.log("Fetch Suggested Error: " + e.getMessage());
+        }
+        return sb.toString();
     }
 
     private int getOrCreateDirectConversation(int u1, int u2) {
