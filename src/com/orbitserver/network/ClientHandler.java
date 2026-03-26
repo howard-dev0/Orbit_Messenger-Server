@@ -47,6 +47,51 @@ public class ClientHandler extends Thread {
                             broadcastStatusToFriends(clientUsername, "ONLINE");
                             break;
 
+                        case "RENAME_GROUP":
+                            // parts = [RENAME_GROUP, groupId, newName, sender]
+                            String gid = parts[1].replace("GROUP_", "");
+                            try (Connection conn = DBConnection.getConnection()) {
+                                String sql = "UPDATE conversations SET group_name = ? WHERE id = ?";
+                                PreparedStatement ps = conn.prepareStatement(sql);
+                                ps.setString(1, parts[2]);
+                                ps.setInt(2, Integer.parseInt(gid));
+                                ps.executeUpdate();
+
+                                dashboard.log("✏️ Group " + gid + " renamed to " + parts[2]);
+
+                                // Broadcast the updated chat list to all members of the group
+                                String membersSql = "SELECT u.username FROM chat_members cm JOIN users u ON cm.user_id = u.id WHERE cm.conversation_id = ?";
+                                PreparedStatement psMem = conn.prepareStatement(membersSql);
+                                psMem.setInt(1, Integer.parseInt(gid));
+                                ResultSet rsMem = psMem.executeQuery();
+                                while (rsMem.next()) {
+                                    PrintWriter memberOut = onlineUsers.get(rsMem.getString("username"));
+                                    if (memberOut != null) {
+                                        memberOut.println("MY_CHATS|" + fetchMyChats(rsMem.getString("username")));
+                                    }
+                                }
+                            } catch (Exception e) {
+                                dashboard.log("Rename Group Error: " + e.getMessage());
+                            }
+                            break;
+                        case "LEAVE_GROUP":
+                            // parts = [LEAVE_GROUP, groupId, username]
+                            String groupIdStr = parts[1].replace("GROUP_", "");
+                            try (Connection conn = DBConnection.getConnection()) {
+                                String sql = "DELETE FROM chat_members WHERE conversation_id = ? AND user_id = (SELECT id FROM users WHERE username = ?)";
+                                PreparedStatement ps = conn.prepareStatement(sql);
+                                ps.setInt(1, Integer.parseInt(groupIdStr));
+                                ps.setString(2, parts[2]);
+                                ps.executeUpdate();
+
+                                // Send updated chat list back to user
+                                out.println("MY_CHATS|" + fetchMyChats(parts[2]));
+                                dashboard.log("🚪 " + parts[2] + " left group " + parts[1]);
+                            } catch (Exception e) {
+                                dashboard.log("Leave Group Error: " + e.getMessage());
+                            }
+                            break;
+
                         case "UPDATE_AVATAR":
                             // parts = [UPDATE_AVATAR, username, base64String]
                             String sql = "UPDATE users SET avatar = ? WHERE username = ?";
@@ -496,12 +541,12 @@ public class ClientHandler extends Thread {
     // ==============================================================
     // MESSAGING & ROUTING ENGINE
     // ==============================================================
-private void handleSendMessage(String target, String encryptedText, String senderUsername) {
+    private void handleSendMessage(String target, String encryptedText, String senderUsername) {
         String time = new java.text.SimpleDateFormat("h:mm a").format(new java.util.Date());
         int senderId = getUserId(senderUsername);
 
         // 🚀 FETCH AVATAR & NAME FOR LIVE MESSAGES
-        String senderFullName = senderUsername; 
+        String senderFullName = senderUsername;
         String senderAvatar = "default";
         String nameSql = "SELECT COALESCE(NULLIF(full_name, 'null'), username), avatar FROM users WHERE id = ?";
         try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(nameSql)) {
@@ -509,7 +554,9 @@ private void handleSendMessage(String target, String encryptedText, String sende
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     senderFullName = rs.getString(1);
-                    if (rs.getString("avatar") != null) senderAvatar = rs.getString("avatar");
+                    if (rs.getString("avatar") != null) {
+                        senderAvatar = rs.getString("avatar");
+                    }
                 }
             }
         } catch (Exception e) {
@@ -521,8 +568,7 @@ private void handleSendMessage(String target, String encryptedText, String sende
             saveMessageToDB(groupId, senderId, encryptedText);
 
             String sql = "SELECT u.username FROM chat_members cm JOIN users u ON cm.user_id = u.id WHERE cm.conversation_id = ?";
-            try (Connection conn = DBConnection.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            try (Connection conn = DBConnection.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setInt(1, groupId);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -554,7 +600,7 @@ private void handleSendMessage(String target, String encryptedText, String sende
         }
     }
 
-private String loadChatHistory(String target, String myUsername) {
+    private String loadChatHistory(String target, String myUsername) {
         StringBuilder sb = new StringBuilder();
         int myId = getUserId(myUsername);
         int convoId = -1;
@@ -566,7 +612,9 @@ private String loadChatHistory(String target, String myUsername) {
             convoId = getOrCreateDirectConversation(myId, targetId);
         }
 
-        if (convoId == -1) return "";
+        if (convoId == -1) {
+            return "";
+        }
 
         // 🚀 ADDED u.avatar TO THE SQL QUERY
         String sql = "SELECT u.username, COALESCE(NULLIF(u.full_name, 'null'), u.username) as clean_name, "
@@ -579,8 +627,9 @@ private String loadChatHistory(String target, String myUsername) {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String avatar = rs.getString("avatar");
-                    if (avatar == null) avatar = "default"; // Fallback to emoji if null
-                    
+                    if (avatar == null) {
+                        avatar = "default"; // Fallback to emoji if null
+                    }
                     // 🚀 ADDED AVATAR TO THE HISTORY DATA STRING
                     sb.append(rs.getString("clean_name")).append("~")
                             .append(rs.getString("encrypted_content")).append("~")
@@ -719,9 +768,9 @@ private String loadChatHistory(String target, String myUsername) {
         }
     }
 
-private String fetchProfileData(String targetUser, String myUsername) {
+    private String fetchProfileData(String targetUser, String myUsername) {
         int targetId = getUserId(targetUser);
-        String fullName = targetUser; 
+        String fullName = targetUser;
         String avatarBase64 = "default"; // 🚀 NEW: Default avatar flag
         int postCount = 0;
         int friendCount = 0;
@@ -743,9 +792,12 @@ private String fetchProfileData(String targetUser, String myUsername) {
             // Count Friends
             String friendSql = "SELECT COUNT(*) FROM friendships WHERE (requester_id = ? OR receiver_id = ?) AND status = 'ACCEPTED'";
             PreparedStatement ps2 = conn.prepareStatement(friendSql);
-            ps2.setInt(1, targetId); ps2.setInt(2, targetId);
+            ps2.setInt(1, targetId);
+            ps2.setInt(2, targetId);
             ResultSet rs2 = ps2.executeQuery();
-            if (rs2.next()) friendCount = rs2.getInt(1);
+            if (rs2.next()) {
+                friendCount = rs2.getInt(1);
+            }
 
             // Get User's Posts
             String postSql = "SELECT content, DATE_FORMAT(created_at, '%b %d, %h:%i %p') as time_str FROM posts WHERE user_id = ? ORDER BY created_at DESC";
@@ -761,7 +813,7 @@ private String fetchProfileData(String targetUser, String myUsername) {
         }
 
         boolean isMe = targetUser.equals(myUsername);
-        
+
         // 🚀 UPGRADED RETURN: Notice we added avatarBase64 right before the posts data
         // Format: targetUser | fullName | postCount | friendCount | isMe | avatarBase64 | PostData
         return targetUser + "|" + fullName + "|" + postCount + "|" + friendCount + "|" + (isMe ? "TRUE" : "FALSE") + "|" + avatarBase64 + "|" + postsBuilder.toString();
